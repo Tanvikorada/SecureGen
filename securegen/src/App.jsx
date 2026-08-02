@@ -5,7 +5,7 @@ import ApiKeyInput from './components/ApiKeyInput';
 import CodeEditor from './components/CodeEditor';
 import AnalysisResult from './components/AnalysisResult';
 import RepoArchitect from './components/RepoArchitect';
-import { analyzeCode } from './utils/groq';
+import { analyzeCode } from './utils/gemini';
 import { AlertCircle, X, Terminal } from 'lucide-react';
 
 function App() {

@@ -3,8 +3,9 @@ import * as d3 from 'd3';
 import {
   Search, Loader2, AlertCircle, FileCode, Package,
   GitBranch, ChevronDown, ChevronRight, ExternalLink, Cpu,
-  CheckCircle2, Circle, Star, Eye, X, Layers
+  CheckCircle2, Circle, Star, Eye, X, Layers, ShieldAlert
 } from 'lucide-react';
+import VulnerabilityCard from './VulnerabilityCard';
 
 // ---------- constants ----------
 const CODE_EXT = new Set(['js','jsx','ts','tsx','py','go','rb','java','php','c','cpp','h','hpp',
@@ -14,9 +15,9 @@ const IGNORE_SEG = ['node_modules','.git','dist','build','vendor','venv','.venv'
 const PRIORITY_NAMES = ['readme.md','package.json','requirements.txt','pyproject.toml','main.py',
   'app.py','index.js','index.ts','app.js','app.tsx','main.js','main.ts','server.js','manage.py',
   'settings.py','docker-compose.yml','dockerfile','vite.config.js','next.config.js'];
-const MAX_FILES = 30;
-const PER_FILE_CHAR_CAP = 3500;
-const TOTAL_CHAR_BUDGET = 42000;
+const MAX_FILES = 100;
+const PER_FILE_CHAR_CAP = 8000;
+const TOTAL_CHAR_BUDGET = 300000;
 
 const FOLDER_COLORS = ['#f97362','#5eb1ef','#a78bfa','#4ade80','#fbbf24','#f472b6','#22d3ee','#fb923c'];
 
@@ -104,6 +105,7 @@ export default function RepoArchitect({ apiKey }) {
   const [result, setResult] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const [expandedFolders, setExpandedFolders] = useState({});
+  const [viewMode, setViewMode] = useState('architecture'); // 'architecture' or 'security'
   const svgWrapRef = useRef(null);
 
   function pushStep(label, status) {
@@ -126,7 +128,7 @@ export default function RepoArchitect({ apiKey }) {
 
   async function analyze() {
     if (!apiKey) {
-      setError("Please enter your API key at the top of the page first.");
+      setError("Please enter your Gemini API key at the top of the page first.");
       return;
     }
 
@@ -172,7 +174,7 @@ export default function RepoArchitect({ apiKey }) {
 
       pushStep('Reading file contents', 'active');
       const fileMap = {};
-      const chunkSize = 8;
+      const chunkSize = 15;
       for (let i = 0; i < selected.length; i += chunkSize) {
         const chunk = selected.slice(i, i + chunkSize);
         const results = await Promise.all(chunk.map(async f => {
@@ -215,7 +217,7 @@ export default function RepoArchitect({ apiKey }) {
       });
       pushStep('Parsing dependency graph', 'done');
 
-      pushStep('Generating architecture analysis', 'active');
+      pushStep('Running Gemini Deep Audit & Analysis', 'active');
       let budget = TOTAL_CHAR_BUDGET;
       const contentBlocks = [];
       for (const f of selected) {
@@ -225,45 +227,65 @@ export default function RepoArchitect({ apiKey }) {
         contentBlocks.push(`--- FILE: ${f.path} ---\n${raw}`);
         budget -= raw.length;
       }
-      const treeSummary = allFiles.slice(0, 200).map(f => f.path).join('\n');
+      const treeSummary = allFiles.slice(0, 300).map(f => f.path).join('\n');
 
-      const prompt = `Analyze this GitHub repository: ${owner}/${repo}.
+      const systemPrompt = `You are a world-class Software Architect and Cybersecurity Expert. You are auditing a GitHub repository.
+Respond with ONLY valid JSON (no markdown fences, no prose outside the JSON) matching exactly this schema:
+{
+  "projectPurpose": "2-3 sentences on what this project does",
+  "techStack": ["short tag", "short tag"],
+  "architecture": "3-4 sentences describing the overall architecture/pattern used",
+  "dataFlow": "3-4 sentences on how data/requests move through the system",
+  "fileExplanations": [{"path": "exact file path from the tree", "role": "one short label", "explanation": "one concise sentence"}],
+  "keyConnections": [{"from": "file path", "to": "file path", "relationship": "short phrase"}],
+  "overall_risk": "critical|high|medium|low|safe",
+  "risk_score": <number 0-100>,
+  "summary": "1 sentence security posture summary",
+  "vulnerabilities": [
+    {
+      "id": "V1",
+      "type": "vulnerability type",
+      "severity": "critical|high|medium|low",
+      "line_reference": "file path and approximate location",
+      "description": "what is wrong",
+      "exploit_scenario": "how an attacker exploits this",
+      "cvss_score": 8.5,
+      "owasp_category": "OWASP category"
+    }
+  ]
+}
+Include fileExplanations for at most 30 of the most important files. Ensure JSON is strictly valid.`;
+
+      const userMessage = `Analyze this GitHub repository: ${owner}/${repo}.
 Description: ${repoData.description || 'none provided'}
 Primary language: ${repoData.language || 'unknown'}
 
-File tree (${allFiles.length} source files total; showing up to 200):
+File tree (${allFiles.length} source files total; showing up to 300):
 ${treeSummary}
 
 Contents of the most important files:
-${contentBlocks.join('\n\n')}
+${contentBlocks.join('\n\n')}`;
 
-Respond with ONLY valid JSON (no markdown fences, no prose outside the JSON) matching exactly this schema:
-{"projectPurpose":"2-3 sentences on what this project does","techStack":["short tag", "short tag"],"architecture":"3-4 sentences describing the overall architecture/pattern used","dataFlow":"3-4 sentences on how data/requests move through the system","fileExplanations":[{"path":"exact file path from the tree above","role":"one short label like Entry Point / API Route / Data Model","explanation":"one concise sentence on what this file does"}],"keyConnections":[{"from":"file path","to":"file path","relationship":"short phrase, e.g. calls API defined in"}]}
-Include fileExplanations for at most 18 of the most important files. Keep the whole response tight — this is a short technical brief, not documentation.`;
-
-      // BYOK direct call to Groq
-      const aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          temperature: 0.3,
-          messages: [{ role: 'user', content: prompt }]
+          contents: [{ role: "user", parts: [{ text: userMessage }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
         })
       });
 
       if (!aiRes.ok) {
-        if (aiRes.status === 401) throw new Error('Invalid API Key. Please check your API key at the top of the page.');
-        if (aiRes.status === 429) throw new Error('Groq rate limit exceeded. Try again in a minute or upgrade your tier.');
+        if (aiRes.status === 400) throw new Error('Invalid request. Ensure you are using a valid Gemini API key.');
+        if (aiRes.status === 403) throw new Error('Invalid API key or unauthorized. Check your API key at aistudio.google.com.');
+        if (aiRes.status === 429) throw new Error('Gemini rate limit exceeded. Try again in a minute.');
         throw new Error(`Analysis backend error: ${aiRes.status}`);
       }
 
       const aiData = await aiRes.json();
-      const textOut = aiData.choices[0].message.content || '';
-      const cleaned = textOut.replace(/```json|```/g, '').trim();
+      const textOut = aiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const cleaned = textOut.trim().replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/i, '');
       
       let analysis;
       try {
@@ -273,9 +295,10 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
         analysis = match ? JSON.parse(match[0]) : {
           projectPurpose: 'Could not parse AI analysis for this repo — try again.',
           techStack: [], architecture: '', dataFlow: '', fileExplanations: [], keyConnections: [],
+          overall_risk: "safe", risk_score: 0, summary: "Failed to parse security audit.", vulnerabilities: []
         };
       }
-      pushStep('Generating architecture analysis', 'done');
+      pushStep('Running Gemini Deep Audit & Analysis', 'done');
 
       (analysis.keyConnections || []).forEach(kc => {
         const fromMatch = [...allPathsSet].find(p => p === kc.from || p.endsWith(kc.from));
@@ -330,6 +353,7 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
         sampledFiles: selected.length,
         truncatedTree: !!treeData.truncated,
       });
+      setViewMode('architecture'); // Default to architecture view when done
     } catch (e) {
       setError(e.message || 'Something went wrong.');
     } finally {
@@ -347,6 +371,20 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
     return groups;
   }, [result]);
 
+  const getRiskColor = (score) => {
+    if (score >= 80) return 'text-accent-red';
+    if (score >= 60) return 'text-accent-orange';
+    if (score >= 30) return 'text-accent-amber';
+    return 'text-accent-green';
+  };
+  
+  const getRiskBg = (score) => {
+    if (score >= 80) return 'bg-accent-red';
+    if (score >= 60) return 'bg-accent-orange';
+    if (score >= 30) return 'bg-accent-amber';
+    return 'bg-accent-green';
+  };
+
   return (
     <div className="w-full text-zinc-100 font-sans" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div className="max-w-5xl mx-auto py-8">
@@ -355,9 +393,9 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-orange to-accent-red flex items-center justify-center">
             <Cpu size={18} className="text-white" />
           </div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Repo Architect</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-white">Repo Auditor & Architect</h1>
         </div>
-        <p className="text-text-secondary text-sm mb-6 ml-12">Paste a GitHub repo. Get its architecture, tech stack, and a live dependency diagram.</p>
+        <p className="text-text-secondary text-sm mb-6 ml-12">Powered by Gemini. Paste a GitHub repo to map its architecture and perform a deep security audit.</p>
 
         <div className="bg-bg-secondary border border-border-default rounded-xl p-4 mb-5 shadow-lg shadow-black/20">
           <div className="flex gap-2">
@@ -388,7 +426,7 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
             className="text-xs text-text-muted hover:text-text-secondary mt-3 flex items-center gap-1 transition-colors"
           >
             {showToken ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            Private repo or hitting rate limits? Add a GitHub token
+            Private repo or hitting GitHub rate limits? Add a GitHub token
           </button>
           {showToken && (
             <input
@@ -423,166 +461,236 @@ Include fileExplanations for at most 18 of the most important files. Keep the wh
 
         {result && (
           <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div>
-                  <a href={result.repoData.html_url} target="_blank" rel="noopener noreferrer"
-                    className="text-lg font-semibold text-white hover:text-accent-orange flex items-center gap-1.5 transition-colors">
-                    {result.owner}/{result.repo}
-                    <ExternalLink size={14} className="text-text-muted" />
-                  </a>
-                  <p className="text-text-secondary text-sm mt-1 max-w-2xl">{result.repoData.description || 'No description provided.'}</p>
-                </div>
-                <div className="flex gap-4 text-sm text-text-muted">
+            <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg flex items-center justify-between">
+              <div>
+                <a href={result.repoData.html_url} target="_blank" rel="noopener noreferrer"
+                  className="text-lg font-semibold text-white hover:text-accent-orange flex items-center gap-1.5 transition-colors">
+                  {result.owner}/{result.repo}
+                  <ExternalLink size={14} className="text-text-muted" />
+                </a>
+                <p className="text-text-secondary text-sm mt-1 max-w-2xl">{result.repoData.description || 'No description provided.'}</p>
+                <div className="flex gap-4 text-xs text-text-muted mt-2">
                   <span className="flex items-center gap-1"><Star size={13} /> {result.repoData.stargazers_count}</span>
                   <span className="flex items-center gap-1"><Eye size={13} /> {result.repoData.watchers_count}</span>
                   <span className="flex items-center gap-1"><GitBranch size={13} /> {result.repoData.default_branch}</span>
+                  <span>Sampled {result.sampledFiles} / {result.totalFiles} files</span>
                 </div>
               </div>
-              <p className="text-xs text-text-muted mt-3">
-                Sampled {result.sampledFiles} of {result.totalFiles} source files{result.truncatedTree ? ' (GitHub truncated the tree — very large repo, coverage is partial)' : ''}.
-              </p>
+              
+              {/* Toggle Switch */}
+              <div className="bg-bg-tertiary p-1 rounded-lg inline-flex border border-border-default shadow-sm self-end">
+                <button
+                  onClick={() => setViewMode('architecture')}
+                  className={`px-4 py-2 text-sm font-medium rounded-md transition-all duration-200 flex items-center gap-2 ${
+                    viewMode === 'architecture' 
+                      ? 'bg-bg-secondary text-white shadow-sm border border-border-default' 
+                      : 'text-text-muted hover:text-text-primary hover:bg-bg-secondary/50'
+                  }`}
+                >
+                  <Cpu size={14} /> Map
+                </button>
+                <button
+                  onClick={() => setViewMode('security')}
+                  className={`px-4 py-2 text-sm font-medium rounded-md transition-all duration-200 flex items-center gap-2 ${
+                    viewMode === 'security' 
+                      ? 'bg-bg-secondary text-white shadow-sm border border-border-default' 
+                      : 'text-text-muted hover:text-text-primary hover:bg-bg-secondary/50'
+                  }`}
+                >
+                  <ShieldAlert size={14} /> Security
+                </button>
+              </div>
             </div>
 
-            <div className="grid md:grid-cols-3 gap-5">
-              <div className="md:col-span-2 bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
-                <h2 className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
-                  <Layers size={14} className="text-accent-orange" /> What this actually does
-                </h2>
-                <p className="text-sm text-text-primary leading-relaxed">{result.analysis.projectPurpose}</p>
-                <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mt-4 mb-1.5">Architecture</h3>
-                <p className="text-sm text-text-secondary leading-relaxed">{result.analysis.architecture}</p>
-                <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mt-4 mb-1.5">Data flow</h3>
-                <p className="text-sm text-text-secondary leading-relaxed">{result.analysis.dataFlow}</p>
-              </div>
-              <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
-                <h2 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
-                  <Package size={14} className="text-accent-orange" /> Tech stack
-                </h2>
-                <div className="flex flex-wrap gap-1.5">
-                  {(result.analysis.techStack || []).map((t, i) => (
-                    <span key={i} className="text-xs bg-bg-tertiary text-text-primary px-2.5 py-1 rounded-md border border-border-default shadow-sm">{t}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
-              <h2 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2">
-                <GitBranch size={14} className="text-accent-orange" /> File dependency graph
-              </h2>
-              <p className="text-xs text-text-muted mb-3">Click a node to see what that file does. Lines show import/connection relationships.</p>
-              <div className="grid lg:grid-cols-[1fr_280px] gap-4">
-                <div ref={svgWrapRef} className="bg-bg-tertiary rounded-lg border border-border-default overflow-auto">
-                  <svg width={result.width} height={result.height}>
-                    {result.edges.map((e, i) => {
-                      const s = typeof e.source === 'object' ? e.source : result.nodes.find(n => n.id === e.source);
-                      const t = typeof e.target === 'object' ? e.target : result.nodes.find(n => n.id === e.target);
-                      if (!s || !t) return null;
-                      return (
-                        <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                          stroke={e.semantic ? '#f97362' : '#3f3f46'} strokeWidth={e.semantic ? 1.4 : 1}
-                          strokeOpacity={0.55} />
-                      );
-                    })}
-                    {result.nodes.map(n => (
-                      <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: 'pointer' }}
-                        onClick={() => setSelectedNode(n.id)}>
-                        <circle r={selectedNode === n.id ? 9 : 6.5}
-                          fill={result.colorScale(n.folder)}
-                          stroke={selectedNode === n.id ? '#fff' : 'none'} strokeWidth={2}
-                          fillOpacity={0.9} />
-                        <text x={9} y={4} fontSize={9.5} fill="#a1a1aa" style={{ userSelect: 'none' }}>{n.name}</text>
-                      </g>
-                    ))}
-                  </svg>
-                </div>
-
-                <div className="bg-bg-tertiary rounded-lg border border-border-default p-4 min-h-[200px]">
-                  {selectedNode ? (
-                    <div className="animate-in fade-in">
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-white break-all">{selectedNode}</h3>
-                        <button onClick={() => setSelectedNode(null)} className="text-text-muted hover:text-white shrink-0 transition-colors">
-                          <X size={14} />
-                        </button>
-                      </div>
-                      {result.explanationByPath[selectedNode] ? (
-                        <>
-                          <span className="inline-block text-[10px] uppercase tracking-wide bg-accent-orange/10 text-accent-orange px-2 py-0.5 rounded mt-2 font-medium">
-                            {result.explanationByPath[selectedNode].role}
-                          </span>
-                          <p className="text-xs text-text-secondary mt-2 leading-relaxed">{result.explanationByPath[selectedNode].explanation}</p>
-                        </>
-                      ) : (
-                        <p className="text-xs text-text-muted mt-2">No detailed explanation was generated for this file — it wasn't part of the sampled core set.</p>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-text-muted">Select a node in the graph to see details about that file.</p>
-                  )}
-                  <div className="mt-4 pt-4 border-t border-border-default">
-                    <p className="text-[10px] uppercase tracking-wide text-text-muted mb-2 font-semibold">Folders</p>
-                    <div className="space-y-1">
-                      {result.folders.map(f => (
-                        <div key={f} className="flex items-center gap-2 text-xs text-text-secondary">
-                          <span className="w-2.5 h-2.5 rounded-full" style={{ background: result.colorScale(f) }} />
-                          {f}
-                        </div>
+            {viewMode === 'architecture' && (
+              <div className="animate-in fade-in space-y-5">
+                <div className="grid md:grid-cols-3 gap-5">
+                  <div className="md:col-span-2 bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
+                    <h2 className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
+                      <Layers size={14} className="text-accent-orange" /> What this actually does
+                    </h2>
+                    <p className="text-sm text-text-primary leading-relaxed">{result.analysis.projectPurpose}</p>
+                    <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mt-4 mb-1.5">Architecture</h3>
+                    <p className="text-sm text-text-secondary leading-relaxed">{result.analysis.architecture}</p>
+                    <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mt-4 mb-1.5">Data flow</h3>
+                    <p className="text-sm text-text-secondary leading-relaxed">{result.analysis.dataFlow}</p>
+                  </div>
+                  <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
+                    <h2 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
+                      <Package size={14} className="text-accent-orange" /> Tech stack
+                    </h2>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(result.analysis.techStack || []).map((t, i) => (
+                        <span key={i} className="text-xs bg-bg-tertiary text-text-primary px-2.5 py-1 rounded-md border border-border-default shadow-sm">{t}</span>
                       ))}
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
-              <h2 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
-                <FileCode size={14} className="text-accent-orange" /> File-by-file breakdown
-              </h2>
-              <div className="space-y-2">
-                {Object.entries(groupedFiles).map(([folder, files]) => (
-                  <div key={folder} className="border border-border-default rounded-lg overflow-hidden">
-                    <button
-                      onClick={() => setExpandedFolders(p => ({ ...p, [folder]: !p[folder] }))}
-                      className="w-full flex items-center justify-between px-3 py-2 bg-bg-tertiary hover:bg-border-default text-sm text-text-primary transition-colors"
-                    >
-                      <span className="flex items-center gap-2">
-                        {expandedFolders[folder] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        {folder} <span className="text-text-muted">({files.length})</span>
-                      </span>
-                    </button>
-                    {expandedFolders[folder] && (
-                      <div className="divide-y divide-border-default bg-bg-secondary">
-                        {files.map(f => {
-                          const exp = result.explanationByPath[f.id];
+                <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
+                  <h2 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2">
+                    <GitBranch size={14} className="text-accent-orange" /> File dependency graph
+                  </h2>
+                  <p className="text-xs text-text-muted mb-3">Click a node to see what that file does. Lines show import/connection relationships.</p>
+                  <div className="grid lg:grid-cols-[1fr_280px] gap-4">
+                    <div ref={svgWrapRef} className="bg-bg-tertiary rounded-lg border border-border-default overflow-auto relative">
+                      <svg width={result.width} height={result.height}>
+                        {result.edges.map((e, i) => {
+                          const s = typeof e.source === 'object' ? e.source : result.nodes.find(n => n.id === e.source);
+                          const t = typeof e.target === 'object' ? e.target : result.nodes.find(n => n.id === e.target);
+                          if (!s || !t) return null;
                           return (
-                            <div key={f.id} className="px-3 py-2.5 flex items-start gap-3 hover:bg-bg-tertiary transition-colors">
-                              <span className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: result.colorScale(f.folder) }} />
-                              <div className="min-w-0">
-                                <p className="text-xs font-mono text-text-primary">{f.name}</p>
-                                {exp ? (
-                                  <p className="text-xs text-text-secondary mt-0.5">
-                                    <span className="text-accent-orange">{exp.role}</span> — {exp.explanation}
-                                  </p>
-                                ) : (
-                                  <p className="text-xs text-text-muted mt-0.5">Not part of the AI-sampled core set.</p>
-                                )}
-                              </div>
-                            </div>
+                            <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                              stroke={e.semantic ? '#f97362' : '#3f3f46'} strokeWidth={e.semantic ? 1.4 : 1}
+                              strokeOpacity={0.55} />
                           );
                         })}
+                        {result.nodes.map(n => (
+                          <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: 'pointer' }}
+                            onClick={() => setSelectedNode(n.id)}>
+                            {selectedNode === n.id && (
+                              <circle r={14} fill={result.colorScale(n.folder)} fillOpacity={0.2} className="animate-pulse" />
+                            )}
+                            <circle r={selectedNode === n.id ? 9 : 6.5}
+                              fill={result.colorScale(n.folder)}
+                              stroke={selectedNode === n.id ? '#fff' : 'rgba(0,0,0,0.5)'} strokeWidth={selectedNode === n.id ? 2 : 1}
+                              fillOpacity={1} />
+                            <text x={11} y={4} fontSize={10} fill={selectedNode === n.id ? "#fff" : "#888"} fontWeight={selectedNode === n.id ? 600 : 400} style={{ userSelect: 'none' }}>
+                              {n.name}
+                            </text>
+                          </g>
+                        ))}
+                      </svg>
+                    </div>
+
+                    <div className="bg-bg-tertiary rounded-lg border border-border-default p-4 min-h-[200px]">
+                      {selectedNode ? (
+                        <div className="animate-in fade-in">
+                          <div className="flex items-start justify-between gap-2">
+                            <h3 className="text-sm font-semibold text-white break-all">{selectedNode}</h3>
+                            <button onClick={() => setSelectedNode(null)} className="text-text-muted hover:text-white shrink-0 transition-colors">
+                              <X size={14} />
+                            </button>
+                          </div>
+                          {result.explanationByPath[selectedNode] ? (
+                            <>
+                              <span className="inline-block text-[10px] uppercase tracking-wide bg-accent-orange/10 text-accent-orange px-2 py-0.5 rounded mt-2 font-medium border border-accent-orange/20">
+                                {result.explanationByPath[selectedNode].role}
+                              </span>
+                              <p className="text-xs text-text-secondary mt-3 leading-relaxed">{result.explanationByPath[selectedNode].explanation}</p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-text-muted mt-2">No detailed explanation was generated for this file — it wasn't part of the sampled core set.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-text-muted">Select a node in the graph to see details about that file.</p>
+                      )}
+                      <div className="mt-6 pt-4 border-t border-border-default">
+                        <p className="text-[10px] uppercase tracking-wide text-text-muted mb-3 font-semibold">Folders</p>
+                        <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-2">
+                          {result.folders.map(f => (
+                            <div key={f} className="flex items-center gap-2 text-xs text-text-secondary">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: result.colorScale(f) }} />
+                              <span className="truncate" title={f}>{f}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    )}
+                    </div>
                   </div>
-                ))}
+                </div>
+
+                <div className="bg-bg-secondary border border-border-default rounded-xl p-5 shadow-lg">
+                  <h2 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
+                    <FileCode size={14} className="text-accent-orange" /> File-by-file breakdown
+                  </h2>
+                  <div className="space-y-2">
+                    {Object.entries(groupedFiles).map(([folder, files]) => (
+                      <div key={folder} className="border border-border-default rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => setExpandedFolders(p => ({ ...p, [folder]: !p[folder] }))}
+                          className="w-full flex items-center justify-between px-3 py-2 bg-bg-tertiary hover:bg-border-default text-sm text-text-primary transition-colors"
+                        >
+                          <span className="flex items-center gap-2">
+                            {expandedFolders[folder] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                            {folder} <span className="text-text-muted">({files.length})</span>
+                          </span>
+                        </button>
+                        {expandedFolders[folder] && (
+                          <div className="divide-y divide-border-default bg-bg-secondary">
+                            {files.map(f => {
+                              const exp = result.explanationByPath[f.id];
+                              return (
+                                <div key={f.id} className="px-3 py-2.5 flex items-start gap-3 hover:bg-bg-tertiary transition-colors">
+                                  <span className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: result.colorScale(f.folder) }} />
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-mono text-text-primary">{f.name}</p>
+                                    {exp ? (
+                                      <p className="text-xs text-text-secondary mt-0.5">
+                                        <span className="text-accent-orange font-medium">{exp.role}</span> — {exp.explanation}
+                                      </p>
+                                    ) : (
+                                      <p className="text-xs text-text-muted mt-0.5">Not part of the AI-sampled core set.</p>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
+
+            {viewMode === 'security' && (
+              <div className="animate-in fade-in space-y-6">
+                <div className="bg-bg-secondary border border-border-default rounded-xl p-8 text-center shadow-lg relative overflow-hidden">
+                  <div className={`absolute top-0 left-0 w-full h-1 ${getRiskBg(result.analysis.risk_score)}`} />
+                  <div className="text-6xl font-bold mb-2 font-mono">
+                    <span className={getRiskColor(result.analysis.risk_score)}>{result.analysis.risk_score}</span>
+                    <span className="text-text-muted text-2xl">/100</span>
+                  </div>
+                  <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 border bg-bg-tertiary ${getRiskColor(result.analysis.risk_score)} border-current/20`}>
+                    {result.analysis.overall_risk} Risk
+                  </div>
+                  <p className="text-text-primary max-w-2xl mx-auto leading-relaxed">
+                    {result.analysis.summary}
+                  </p>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                    <ShieldAlert className="text-accent-orange w-5 h-5" /> 
+                    Repository Vulnerabilities ({result.analysis.vulnerabilities?.length || 0})
+                  </h3>
+                  {result.analysis.vulnerabilities?.length > 0 ? (
+                    <div className="space-y-4">
+                      {result.analysis.vulnerabilities.map((vuln, idx) => (
+                        <VulnerabilityCard key={idx} vuln={vuln} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-bg-secondary border border-border-default rounded-xl p-8 text-center shadow-lg">
+                      <CheckCircle2 className="w-12 h-12 text-accent-green mx-auto mb-3 opacity-80" />
+                      <h4 className="text-white font-medium mb-1">No major vulnerabilities detected</h4>
+                      <p className="text-sm text-text-muted max-w-md mx-auto">
+                        The AI did not find any critical security flaws in the sampled source code files for this repository.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {!result && !loading && steps.length === 0 && (
-          <div className="text-center py-16 text-text-muted text-sm border border-dashed border-border-default rounded-xl bg-bg-secondary/50">
+          <div className="text-center py-16 text-text-muted text-sm border border-dashed border-border-default rounded-xl bg-bg-secondary/50 shadow-inner">
+            <Cpu className="w-8 h-8 text-border-default mx-auto mb-3" />
             Paste a public GitHub repo URL above to get started.
           </div>
         )}
