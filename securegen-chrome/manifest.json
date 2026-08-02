@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "SecureGen - AI Code Auditor",
+  "version": "1.0.0",
+  "description": "Automatically audits AI-generated code from ChatGPT and Claude for security vulnerabilities.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://api.groq.com/",
+    "https://generativelanguage.googleapis.com/"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://github.com/*",
+        "https://stackoverflow.com/*",
+        "https://leetcode.com/*",
+        "https://gitlab.com/*"
+      ],
+      "css": ["content.css"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SecureGen Settings"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "name": "securegen-vscode",
+  "displayName": "SecureGen",
+  "description": "SecureGen AI Code Auditor",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "securegen.auditSelection",
+        "title": "SecureGen: Audit Selected Code"
+      }
+    ],
+    "configuration": {
+      "title": "SecureGen",
+      "properties": {
+        "securegen.provider": {
+          "type": "string",
+          "enum": ["Groq (Llama 3)", "Google Gemini"],
+          "default": "Groq (Llama 3)",
+          "description": "Select your preferred AI provider"
+        },
+        "securegen.groqApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Groq API Key (get from console.groq.com)"
+        },
+        "securegen.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Google Gemini API Key (get from aistudio.google.com)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.1.3"
+  }
+}
